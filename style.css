@@ -115,12 +115,11 @@ label.fld { display: block; font-size: 12.5px; color: #8a8577; margin: 12px 0 5p
 .dot-stored { background: #9aa0a6; } .dot-retired { background: #c0392b; }
 
 .fab {
-  position: fixed; right: calc(50% - 280px + 18px); bottom: calc(76px + env(safe-area-inset-bottom));
+  position: fixed; right: 18px; bottom: calc(76px + env(safe-area-inset-bottom));
   background: #1f6f5c; color: #fff; border: none; border-radius: 999px;
   padding: 14px 20px; font-size: 15px; font-weight: 700; cursor: pointer;
   box-shadow: 0 6px 18px rgba(31,111,92,.35);
 }
-@media (max-width: 560px) { .fab { right: 18px; } }
 
 /* 底部导航 */
 #tabbar {
@@ -220,3 +219,85 @@ label.fld { display: block; font-size: 12.5px; color: #8a8577; margin: 12px 0 5p
 
 /* v2：今天/明天切换 */
 .ctx-pill.on { background: #1f6f5c; color: #fff; border-color: #1f6f5c; }
+
+/* 候选卡片容器（手机一列，电脑多列） */
+.cards { display: flex; flex-direction: column; gap: 0; }
+.cards > .outfit-card:last-child { margin-bottom: 0; }
+
+/* 统计页区块容器 */
+.stat-block { margin-bottom: 2px; }
+
+/* ============ 电脑端布局（窗口 ≥900px 自动切换） ============ */
+@media (min-width: 900px) {
+  #app {
+    max-width: none;
+    margin: 0;
+    padding-left: 216px;
+    min-height: 100vh;
+  }
+
+  /* 底部导航 → 左侧栏 */
+  #tabbar {
+    top: 0; bottom: 0; left: 0; right: auto;
+    width: 216px; max-width: none; margin: 0;
+    flex-direction: column; justify-content: flex-start; gap: 4px;
+    padding: calc(env(safe-area-inset-top) + 66px) 12px 12px;
+    border-top: none; border-right: 1px solid #e9e4da;
+    background: rgba(255, 255, 255, .96);
+  }
+  .tab {
+    flex-direction: row; justify-content: flex-start; gap: 10px;
+    width: 100%; padding: 12px 14px; border-radius: 10px;
+    font-size: 14px;
+  }
+  .tab.active { background: #eaf3ef; }
+
+  #topbar {
+    padding: 18px 28px 10px;
+    max-width: 1240px;
+  }
+  main {
+    padding: 8px 28px 48px;
+    max-width: 1240px;
+  }
+
+  /* 候选卡片三列 */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  .cards > .outfit-card { margin-bottom: 0; }
+
+  /* 衣橱多列 */
+  .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+
+  /* 统计页两列 */
+  #page-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 28px;
+    align-items: start;
+  }
+  .stat-block { break-inside: avoid; }
+  .cal-cell { aspect-ratio: auto; min-height: 52px; }
+
+  /* 弹层居中 */
+  .sheet-mask { align-items: center; padding: 24px; }
+  .sheet {
+    border-radius: 18px;
+    max-width: 640px;
+    max-height: 86vh;
+  }
+
+  /* 悬浮按钮 */
+  .fab { right: 28px; bottom: 28px; }
+  .fab2 { bottom: 86px; }
+
+  /* 表单宽度 */
+  select, input[type="text"], input[type="number"], input[type="password"], input[type="date"] {
+    max-width: 480px;
+  }
+  .ctx-row, .forecast-row { max-width: 720px; }
+}

@@ -569,7 +569,7 @@ function renderToday() {
   } else {
     html += '<div class="section-title">' + (off === 1 ? '明早候选' : '今日候选') +
       ' <button class="link-btn" data-action="regen">换一批 ⟳</button></div>';
-    html += ui.sets.map((set, idx) => {
+    html += '<div class="cards">' + ui.sets.map((set, idx) => {
       const rows = set.ids.map(itemRow).join('');
       const rv = ui.reviews[set.key];
       return '<div class="outfit-card">' +
@@ -584,7 +584,7 @@ function renderToday() {
         '<button class="icon-btn" data-action="fb" data-i="' + idx + '" data-k="dislike">👎</button>' +
         '<button class="icon-btn" data-action="ai-review" data-i="' + idx + '" title="AI 点评">💬</button>' +
         '</div></div>';
-    }).join('');
+    }).join('') + '</div>';
   }
 
   /* 今天穿了啥 */

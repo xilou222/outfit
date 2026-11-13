@@ -34,12 +34,12 @@ function renderStats() {
       '<div class="cal-d">' + d + '</div><div class="cal-dots">' + dots + '</div></div>';
   }
 
-  html += '<div class="section-title">穿着日历' +
+  html += '<div class="stat-block"><div class="section-title">穿着日历' +
     '<span><button class="link-btn" data-action="cal-prev">‹</button> ' + y + ' 年 ' + m + ' 月 ' +
     '<button class="link-btn" data-action="cal-next">›</button></span></div>' +
     '<div class="manual-record"><div class="cal-grid">' +
     ['日', '一', '二', '三', '四', '五', '六'].map((d) => '<div class="cal-head">' + d + '</div>').join('') +
-    cells + '</div><div class="muted" style="margin-top:6px">点有色点的日期看当天穿了啥</div></div>';
+    cells + '</div><div class="muted" style="margin-top:6px">点有色点的日期看当天穿了啥</div></div></div>';
 
   /* ---- 衣橱体检 ---- */
   const active = state.items.filter((i) => i.status === 'active');
@@ -65,7 +65,7 @@ function renderStats() {
   });
   const similar = Object.values(groups).filter((g) => g.length > 1);
 
-  html += '<div class="section-title">衣橱体检</div><div class="manual-record">' +
+  html += '<div class="stat-block"><div class="section-title">衣橱体检</div><div class="manual-record">' +
     '<div class="kv"><span class="k">利用率</span><span>' + util + '%（' + wornIds.size + ' / ' + active.length + ' 件被穿过）</span></div>' +
     (top5.length ? '<div class="kv"><span class="k">最常穿</span><span>' +
       top5.map((x) => esc(x.it.name) + '×' + x.n).join('，') + '</span></div>' : '') +
@@ -73,7 +73,7 @@ function renderStats() {
       dust.slice(0, 6).map((i) => esc(i.name)).join('，') + (dust.length > 6 ? ' 等 ' + dust.length + ' 件' : '') + '</span></div>' : '') +
     (similar.length ? '<div class="kv"><span class="k">有点重复</span><span>' +
       similar.map((g) => esc(g[0].color + g[0].subtype) + '×' + g.length).join('，') + '</span></div>' : '') +
-    '</div>';
+    '</div></div>';
 
   /* ---- 风格记忆 ---- */
   const likeF = {}, dislikeF = {};
@@ -97,29 +97,29 @@ function renderStats() {
   if (topWorn) memLines.push('实际穿得最多的是「' + topWorn[0] + '」（' + topWorn[1] + ' 次）');
   if (!memLines.length) memLines.push('多用几天（点👍👎、记录穿着），这里会慢慢长出你的风格画像');
 
-  html += '<div class="section-title">风格记忆</div><div class="manual-record">' +
-    memLines.map((l) => '<div class="kv"><span>' + esc(l) + '</span></div>').join('') + '</div>';
+  html += '<div class="stat-block"><div class="section-title">风格记忆</div><div class="manual-record">' +
+    memLines.map((l) => '<div class="kv"><span>' + esc(l) + '</span></div>').join('') + '</div></div>';
 
   /* ---- 购衣参谋 ---- */
   if (typeof gapAdvice === 'function') {
     const gaps = gapAdvice();
-    html += '<div class="section-title">购衣参谋</div><div class="manual-record">' +
+    html += '<div class="stat-block"><div class="section-title">购衣参谋</div><div class="manual-record">' +
       (gaps.length
         ? gaps.map((g) => '<div class="kv"><span class="k">' + esc(g.label) + '</span><span>约盘活 ' + g.count + ' 套搭配</span></div>').join('') +
           '<div class="muted" style="margin-top:6px">按你现有衣橱模拟得出，仅供参考——买之前想想是不是真缺。</div>'
         : '<div class="muted">衣橱还太小，先把基础款攒起来再说。</div>') +
-      '</div>';
+      '</div></div>';
   }
 
   /* ---- 旅行打包 ---- */
-  html += '<div class="section-title">旅行打包</div><div class="manual-record">' +
+  html += '<div class="stat-block"><div class="section-title">旅行打包</div><div class="manual-record">' +
     '<div class="mr-row">' +
     '<input type="number" id="trip-days" value="3" min="1" max="10" placeholder="天数">' +
     '<input type="number" id="trip-temp" value="' + (tempForDay(0) == null ? 20 : tempForDay(0)) + '" placeholder="目的地温度">' +
     '<select id="trip-occ">' + OCCASIONS.map((o) => '<option value="' + o + '"' + (o === '休闲' ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>' +
     '</div>' +
     '<button class="btn primary" data-action="trip-gen">生成打包清单</button>' +
-    '<div id="trip-out"></div></div>';
+    '<div id="trip-out"></div></div></div>';
 
   el.innerHTML = html;
 
