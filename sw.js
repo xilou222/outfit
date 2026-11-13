@@ -1,7 +1,7 @@
 /* 穿搭助手 Service Worker：应用壳缓存，网络优先、离线兜底 */
-const CACHE = 'outfit-shell-v1';
+const CACHE = 'outfit-shell-v2';
 const ASSETS = [
-  './', 'index.html', 'style.css', 'app.js', 'manifest.json',
+  './', 'index.html', 'style.css', 'app.js', 'extra.js', 'manifest.json',
   'icons/icon-180.png', 'icons/icon-512.png'
 ];
 

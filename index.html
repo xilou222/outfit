@@ -24,12 +24,14 @@
   <main>
     <section id="page-today" class="page"></section>
     <section id="page-closet" class="page hidden"></section>
+    <section id="page-stats" class="page hidden"></section>
     <section id="page-settings" class="page hidden"></section>
   </main>
 
   <nav id="tabbar">
     <button data-tab="today" class="tab active">今天</button>
     <button data-tab="closet" class="tab">衣橱</button>
+    <button data-tab="stats" class="tab">统计</button>
     <button data-tab="settings" class="tab">设置</button>
   </nav>
 </div>
@@ -40,6 +42,7 @@
 <input type="file" id="photo-input" accept="image/*" style="display:none">
 <input type="file" id="import-input" accept=".zip,.json" style="display:none">
 
+<script src="extra.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

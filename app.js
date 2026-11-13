@@ -1,12 +1,13 @@
 'use strict';
 /* =====================================================================
-   穿搭助手 v1 —— 本地衣橱 + 每日穿搭建议
-   数据：衣物/穿着记录存 localStorage，照片存 IndexedDB；一键导出 zip 备份
+   穿搭助手 v2 —— 本地衣橱 + 每日穿搭建议
+   核心：存储 / 取色 / 天气 / 打分推荐 / 今天 / 衣橱 / 设置 / 备份
+   统计页与 AI 功能在 extra.js
    ===================================================================== */
 
 /* ================= 常量 ================= */
-const CAT = { top: '上衣', pants: '裤子', shoes: '鞋子' };
-const CATS = ['top', 'pants', 'shoes'];
+const CAT = { top: '上衣', outer: '外套', pants: '裤子', shoes: '鞋子' };
+const CATS = ['top', 'outer', 'pants', 'shoes'];
 
 const SUBTYPES = {
   top: [
@@ -15,21 +16,27 @@ const SUBTYPES = {
     { name: '衬衫', form: 3, tmin: 15, tmax: 30 },
     { name: '卫衣', form: 2, tmin: 8, tmax: 22 },
     { name: '毛衣', form: 3, tmin: 5, tmax: 18 },
+    { name: '针织衫', form: 3, tmin: 10, tmax: 25 }
+  ],
+  outer: [
     { name: '夹克', form: 3, tmin: 8, tmax: 22 },
-    { name: '大衣', form: 4, tmin: -2, tmax: 15 }
+    { name: '风衣', form: 4, tmin: 8, tmax: 20 },
+    { name: '西装外套', form: 4, tmin: 10, tmax: 24 },
+    { name: '大衣', form: 4, tmin: -2, tmax: 15 },
+    { name: '羽绒服', form: 2, tmin: -10, tmax: 10 }
   ],
   pants: [
-    { name: '牛仔裤', form: 2, tmin: 8, tmax: 30 },
-    { name: '休闲裤', form: 3, tmin: 8, tmax: 28 },
-    { name: '西裤', form: 4, tmin: 5, tmax: 25 },
-    { name: '运动裤', form: 1, tmin: 12, tmax: 32 },
+    { name: '牛仔裤', form: 2, tmin: 0, tmax: 30 },
+    { name: '休闲裤', form: 3, tmin: 2, tmax: 28 },
+    { name: '西裤', form: 4, tmin: 2, tmax: 25 },
+    { name: '运动裤', form: 1, tmin: 5, tmax: 32 },
     { name: '短裤', form: 1, tmin: 24, tmax: 38 }
   ],
   shoes: [
-    { name: '运动鞋', form: 2, tmin: 0, tmax: 32 },
-    { name: '板鞋', form: 3, tmin: 5, tmax: 30 },
-    { name: '皮鞋', form: 4, tmin: 5, tmax: 28 },
-    { name: '靴子', form: 3, tmin: -5, tmax: 18 },
+    { name: '运动鞋', form: 2, tmin: -5, tmax: 32 },
+    { name: '板鞋', form: 3, tmin: 0, tmax: 30 },
+    { name: '皮鞋', form: 4, tmin: 0, tmax: 28 },
+    { name: '靴子', form: 3, tmin: -10, tmax: 18 },
     { name: '凉鞋', form: 1, tmin: 22, tmax: 38 }
   ]
 };
@@ -58,16 +65,27 @@ const STATUS = { active: '可穿', laundry: '在洗', stored: '收纳', retired:
 /* ================= 状态 ================= */
 let state = {
   items: [],          // {id,category,subtype,name,color,colorHex,formality,tmin,tmax,tags,status,lastWorn,wearCount,like,dislike,createdAt}
-  wearlog: [],        // {date, ids:[top,pants,shoes], key, feedback}
+  wearlog: [],        // {date, ids:[...], key, feedback}
   feedback: {},       // key -> {like,dislike}
-  settings: { city: '上海', lat: 31.23, lon: 121.47, manualTemp: null, weather: null, lastBackup: null, occasion: null }
+  settings: {
+    city: '上海', lat: 31.23, lon: 121.47,
+    manualTemp: null, weather: null,      // weather: {temp,feels,min,max,desc,date,forecast:[{date,min,max,desc}]}
+    lastBackup: null, occasion: null,
+    occMap: {},                           // 'YYYY-MM-DD' -> 场合
+    plan: null,                           // {date, ids} 昨晚挑好的明早方案
+    ai: { url: '', key: '', model: '' }   // 可选：OpenAI 兼容接口
+  }
 };
 let ui = {
   tab: 'today',
+  viewDay: 0,          // 0=今天 1=明天
   closetFilter: { cat: 'all', status: 'active' },
   sets: [],
-  draft: null,        // 添加/编辑表单草稿
-  photoTarget: null
+  setsFor: null,       // 当前 sets 对应的日期
+  reviews: {},         // set.key -> 点评文字
+  draft: null,
+  batchQueue: [],      // 批量录入待处理照片
+  calMonth: null       // 统计页日历月份 'YYYY-MM'
 };
 const imgCache = new Map(); // itemId -> objectURL
 
@@ -81,7 +99,11 @@ function loadAll() {
     if (Array.isArray(it)) state.items = it;
     if (Array.isArray(wl)) state.wearlog = wl;
     if (fb && typeof fb === 'object') state.feedback = fb;
-    if (st && typeof st === 'object') state.settings = Object.assign(state.settings, st);
+    if (st && typeof st === 'object') {
+      state.settings = Object.assign(state.settings, st);
+      state.settings.ai = Object.assign({ url: '', key: '', model: '' }, st.ai || {});
+      state.settings.occMap = st.occMap || {};
+    }
   } catch (e) { console.warn('读取本地数据失败', e); }
 }
 function saveAll() {
@@ -143,6 +165,11 @@ function today(d) {
   const x = d || new Date();
   return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
 }
+function dayOffset(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return today(d);
+}
 function daysSince(dateStr) {
   if (!dateStr) return 14;
   return Math.round((Date.now() - new Date(dateStr + 'T00:00:00').getTime()) / 86400000);
@@ -151,7 +178,13 @@ function findItem(id) { return state.items.find((i) => i.id === id); }
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._timer); t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.classList.remove('show'), 2400);
+}
+function hexLightness(hex) {
+  if (!hex || hex[0] !== '#') return 0.5;
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
 }
 
 /* ================= 图片：压缩 + 取色 ================= */
@@ -162,12 +195,9 @@ async function compressImage(file, maxSide, quality) {
   const w = Math.max(1, Math.round(bmp.width * scale));
   const h = Math.max(1, Math.round(bmp.height * scale));
   const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.drawImage(bmp, 0, 0, w, h);
-  const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', quality));
-  return blob;
+  c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  return await new Promise((res) => c.toBlob(res, 'image/jpeg', quality));
 }
-
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
@@ -203,8 +233,6 @@ function rgbToFamily(r, g, b) {
   if (h < 290) return '紫';
   return l > 0.65 ? '粉' : '紫';
 }
-
-/* 从图片提取 3 个候选主色（中心加权，削弱背景），返回 [{family,hex}] */
 async function extractColors(blob) {
   const bmp = await createImageBitmap(blob);
   const S = 80;
@@ -244,34 +272,45 @@ async function fetchWithTimeout(url, ms) {
   try { return await fetch(url, { signal: ctl.signal }); }
   finally { clearTimeout(t); }
 }
+function parseWttr(j) {
+  const cur = j.current_condition[0];
+  const forecast = (j.weather || []).map((w) => ({
+    date: w.date,
+    min: parseInt(w.mintempC, 10),
+    max: parseInt(w.maxtempC, 10),
+    desc: (w.hourly && w.hourly[4] && w.hourly[4].weatherDesc) ? w.hourly[4].weatherDesc[0].value : ''
+  }));
+  return {
+    temp: parseInt(cur.temp_C, 10),
+    feels: parseInt(cur.FeelsLikeC, 10),
+    min: forecast[0] ? forecast[0].min : null,
+    max: forecast[0] ? forecast[0].max : null,
+    desc: cur.weatherDesc ? cur.weatherDesc[0].value : '',
+    forecast, date: today()
+  };
+}
 async function refreshWeather() {
   const s = state.settings;
   try {
     const r = await fetchWithTimeout('https://wttr.in/' + encodeURIComponent(s.city) + '?format=j1', 6000);
-    const j = await r.json();
-    const cur = parseInt(j.current_condition[0].temp_C, 10);
-    const w = (j.weather && j.weather[0]) || null;
-    s.weather = {
-      temp: cur,
-      feels: parseInt(j.current_condition[0].FeelsLikeC, 10),
-      min: w ? parseInt(w.mintempC, 10) : null,
-      max: w ? parseInt(w.maxtempC, 10) : null,
-      desc: j.current_condition[0].weatherDesc ? j.current_condition[0].weatherDesc[0].value : '',
-      date: today()
-    };
+    s.weather = parseWttr(await r.json());
     saveAll(); renderAll();
     return true;
   } catch (e) {
     try {
       const r2 = await fetchWithTimeout(
         'https://api.open-meteo.com/v1/forecast?latitude=' + s.lat + '&longitude=' + s.lon +
-        '&current=temperature_2m&daily=temperature_2m_min,temperature_2m_max&timezone=auto&forecast_days=1', 5000);
+        '&current=temperature_2m&daily=temperature_2m_min,temperature_2m_max,weather_code&timezone=auto&forecast_days=4', 5000);
       const j2 = await r2.json();
       s.weather = {
         temp: Math.round(j2.current.temperature_2m),
         min: Math.round(j2.daily.temperature_2m_min[0]),
         max: Math.round(j2.daily.temperature_2m_max[0]),
-        desc: '', date: today()
+        desc: '', date: today(),
+        forecast: j2.daily.time.map((d, i) => ({
+          date: d, min: Math.round(j2.daily.temperature_2m_min[i]),
+          max: Math.round(j2.daily.temperature_2m_max[i]), desc: ''
+        }))
       };
       saveAll(); renderAll();
       return true;
@@ -280,40 +319,53 @@ async function refreshWeather() {
     }
   }
 }
-function currentTemp() {
+function tempForDay(offset) {
   const s = state.settings;
-  if (s.manualTemp != null) return s.manualTemp;
-  if (s.weather && s.weather.temp != null) return s.weather.temp;
-  return null;
+  if (offset === 0 && s.manualTemp != null) return s.manualTemp;
+  const fc = s.weather && s.weather.forecast && s.weather.forecast[offset];
+  if (fc && fc.max != null) return Math.round((fc.min + fc.max) / 2);
+  if (s.weather && s.weather.temp != null && offset === 0) return s.weather.temp;
+  return s.manualTemp;
+}
+function occasionForDate(dateStr) {
+  const s = state.settings;
+  if (s.occMap && s.occMap[dateStr]) return s.occMap[dateStr];
+  const d = new Date(dateStr + 'T00:00:00');
+  const day = d.getDay();
+  return (day === 0 || day === 6) ? '休闲' : '通勤';
 }
 
 /* ================= 打分与推荐 ================= */
 function tempOk(item, temp) {
   return temp >= item.tmin - 1 && temp <= item.tmax + 1;
 }
+function hasOuterItems() {
+  return state.items.some((i) => i.category === 'outer' && i.status === 'active');
+}
 
-function scoreCombo(t, p, s, temp, occ) {
+function scoreCombo(t, p, s, temp, occ, o) {
   let total = 0;
   const reasons = [];
+  const present = [t, p, s].concat(o ? [o] : []);
 
-  /* 正式度一致 */
-  const forms = [t.formality, p.formality, s.formality];
+  /* 正式度一致（含外套） */
+  const forms = present.map((x) => x.formality);
   const spread = Math.max.apply(null, forms) - Math.min.apply(null, forms);
-  if (spread === 0) { total += 2; reasons.push('三件正式度一致（' + forms[0] + ' 级）'); }
+  if (spread === 0) { total += 2; reasons.push('整体正式度一致（' + forms[0] + ' 级）'); }
   else if (spread === 1) { total += 1; }
   else { total -= spread; reasons.push('正式度跨度 ' + spread + ' 级，略违和'); }
-  const avgF = (forms[0] + forms[1] + forms[2]) / 3;
+  const avgF = forms.reduce((a, b) => a + b, 0) / forms.length;
   if (occ === '通勤' && avgF >= 3) total += 0.6;
   if (occ === '正式' && avgF >= 4) total += 0.8;
   if (occ === '休闲' && avgF <= 3) total += 0.6;
   if (occ === '运动' && avgF <= 2) total += 0.8;
 
   /* 颜色 */
-  const fams = [t.color, p.color, s.color];
+  const fams = present.map((x) => x.color);
   const distinct = new Set(fams).size;
   if (distinct <= 2) { total += 1.5; reasons.push('配色干净：' + [...new Set(fams)].join(' + ')); }
-  else if (distinct === 3) { total += 1; }
-  else { total -= 1.5; }
+  else if (distinct === 3) { total += 0.5; }
+  else { total -= 1; }
   const allNeutral = fams.every((f) => NEUTRAL.has(f));
   if (allNeutral) {
     total += 1;
@@ -326,54 +378,79 @@ function scoreCombo(t, p, s, temp, occ) {
   if (s.color === '白' || s.color === '黑') total += 0.4;
   if (s.color === t.color || s.color === p.color) { total += 0.5; reasons.push('鞋子和衣服顺色呼应'); }
 
+  /* 上浅下深 */
+  const lt = hexLightness(t.colorHex), lp = hexLightness(p.colorHex);
+  if (lt >= lp + 0.1) { total += 0.5; reasons.push('上浅下深，比例舒服'); }
+
+  /* 季节感：夏天偏轻薄明亮，冬天偏沉稳 */
+  const month = new Date().getMonth() + 1;
+  const avgL = present.reduce((a, x) => a + hexLightness(x.colorHex), 0) / present.length;
+  if ((month >= 4 && month <= 9 && avgL >= 0.45) || ((month <= 3 || month >= 10) && avgL <= 0.55)) total += 0.4;
+
   /* 裤×鞋类型矩阵 */
   const m = (MATRIX[p.subtype] || {})[s.subtype];
   if (m != null) total += m;
 
   /* 风格标签 */
-  const tagSets = [new Set(t.tags || []), new Set(p.tags || []), new Set(s.tags || [])];
+  const tagSets = present.map((x) => new Set(x.tags || []));
   let common = null;
-  for (const tag of tagSets[0]) if (tagSets[1].has(tag) && tagSets[2].has(tag)) common = tag;
+  for (const tag of tagSets[0]) if (tagSets.every((st) => st.has(tag))) common = tag;
   if (common) { total += 0.8; reasons.push('整体都是' + common + '风'); }
-  const allTags = [...tagSets[0], ...tagSets[1], ...tagSets[2]];
+  const allTags = [].concat(...present.map((x) => x.tags || []));
   if (allTags.includes('运动') && allTags.includes('商务')) {
     total -= 0.8; reasons.push('风格标签冲突（运动×商务）');
   }
 
-  /* 轮换：很久没穿的加分 */
-  for (const it of [t, p, s]) total += Math.min(daysSince(it.lastWorn), 10) * 0.08;
+  /* 叠穿层逻辑 */
+  if (temp != null && hasOuterItems()) {
+    if (temp <= 12) {
+      if (o) { total += 1.5; reasons.push('天冷，加件外套刚好'); }
+      else total -= 1.2;
+    } else if (temp <= 17 && o) {
+      total += 0.5;
+    } else if (temp >= 22 && o) {
+      total -= 0.5;
+    }
+  }
+
+  /* 轮换 */
+  for (const it of present) total += Math.min(daysSince(it.lastWorn), 10) * 0.08;
 
   /* 历史反馈 */
-  const key = [t.id, p.id, s.id].slice().sort().join('|');
+  const key = present.map((x) => x.id).sort().join('|');
   const fb = state.feedback[key];
   if (fb) {
     total += (fb.like || 0) * 0.9 - (fb.dislike || 0) * 1.2;
     if (fb.like && !fb.dislike) reasons.push('你上次给过好评');
     if (fb.dislike) reasons.push('这套曾被你点过不喜欢，谨慎');
   }
-  for (const it of [t, p, s]) total += (it.like || 0) * 0.15 - (it.dislike || 0) * 0.25;
+  for (const it of present) total += (it.like || 0) * 0.15 - (it.dislike || 0) * 0.25;
 
-  if (temp != null) reasons.unshift(temp + '°，三件都在适穿区间');
+  if (temp != null) reasons.unshift(temp + '°，都在适穿区间');
 
-  total += Math.random() * 0.5; // ε：别天天一样
-  return { total, reasons, key, ids: [t.id, p.id, s.id] };
+  total += Math.random() * 0.5;
+  return { total, reasons, key, ids: present.map((x) => x.id) };
 }
 
-function generateSets(n, excludeKeys) {
+function generateSets(n, excludeKeys, dayTemp, dayOcc) {
   n = n || 3; excludeKeys = excludeKeys || new Set();
   const items = state.items.filter((i) => i.status === 'active');
   const tops = items.filter((i) => i.category === 'top');
+  const outers = items.filter((i) => i.category === 'outer');
   const pants = items.filter((i) => i.category === 'pants');
   const shoes = items.filter((i) => i.category === 'shoes');
-  const temp = currentTemp();
-  const occ = state.settings.occasion || (new Date().getDay() === 0 || new Date().getDay() === 6 ? '休闲' : '通勤');
+  const temp = dayTemp != null ? dayTemp : tempForDay(0);
+  const occ = dayOcc || occasionForDate(dayOffset(ui.viewDay));
 
   const combos = [];
   for (const t of tops) for (const p of pants) for (const s of shoes) {
     if (temp != null && (!tempOk(t, temp) || !tempOk(p, temp) || !tempOk(s, temp))) continue;
-    const r = scoreCombo(t, p, s, temp, occ);
-    if (excludeKeys.has(r.key)) continue;
-    combos.push(r);
+    const outerChoices = [null].concat(outers.filter((o) => temp == null || tempOk(o, temp)));
+    for (const o of outerChoices) {
+      const r = scoreCombo(t, p, s, temp, occ, o);
+      if (excludeKeys.has(r.key)) continue;
+      combos.push(r);
+    }
   }
   combos.sort((a, b) => b.total - a.total);
 
@@ -391,8 +468,8 @@ function generateSets(n, excludeKeys) {
 }
 
 /* ================= 穿着记录与反馈 ================= */
-function recordWear(ids) {
-  const d = today();
+function recordWear(ids, dateStr) {
+  const d = dateStr || today();
   const key = ids.slice().sort().join('|');
   const existing = state.wearlog.find((w) => w.date === d);
   if (existing) {
@@ -417,72 +494,114 @@ function setFeedback(key, kind) {
 }
 
 /* ================= 渲染：今天 ================= */
+function itemRow(id) {
+  const it = findItem(id);
+  if (!it) return '';
+  const url = imgCache.get(it.id);
+  return '<div class="outfit-row">' +
+    (url ? '<img src="' + url + '" alt="">' : '<div class="noimg">无图</div>') +
+    '<div><div class="item-name">' + esc(it.name) + '</div>' +
+    '<div class="item-sub"><span class="swatch" style="background:' + (HEX_OF[it.color] || it.colorHex || '#ccc') + '"></span>' +
+    esc(it.color) + ' · ' + esc(it.subtype) + ' · 正式度 ' + it.formality + '</div></div></div>';
+}
+
 function renderToday() {
   const el = document.getElementById('page-today');
   const s = state.settings;
-  const temp = currentTemp();
-  const defaultOcc = new Date().getDay() === 0 || new Date().getDay() === 6 ? '休闲' : '通勤';
-  const occ = s.occasion || defaultOcc;
+  const off = ui.viewDay;
+  const dateStr = dayOffset(off);
+  const temp = tempForDay(off);
+  const occ = s.occasion && off === 0 ? s.occasion : occasionForDate(dateStr);
+  const w = s.weather;
 
   let html = '';
-  const w = s.weather;
-  const tempTxt = temp == null ? '温度未知' :
-    (s.manualTemp != null ? temp + '°（手动）' : temp + '°' + (w && w.desc ? ' ' + esc(w.desc) : ''));
+  /* 今明切换 + 天气 + 场合 */
   html += '<div class="ctx-row">' +
-    '<button class="ctx-pill" data-action="edit-temp"><b>' + esc(s.city) + ' · ' + tempTxt + '</b> · 点我改</button>' +
-    OCCASIONS.map((o) => '<button class="occ-chip' + (o === occ ? ' on' : '') + '" data-action="set-occ" data-v="' + o + '">' + o + '</button>').join('') +
+    '<button class="ctx-pill' + (off === 0 ? ' on' : '') + '" data-action="set-viewday" data-v="0">今天</button>' +
+    '<button class="ctx-pill' + (off === 1 ? ' on' : '') + '" data-action="set-viewday" data-v="1">明天</button>' +
+    '<button class="ctx-pill" data-action="edit-temp"><b>' + esc(s.city) + ' · ' + (temp == null ? '温度未知' : temp + '°') + '</b> · 改</button>' +
     '</div>';
 
+  /* 3 天预报 */
+  if (w && w.forecast && w.forecast.length) {
+    html += '<div class="forecast-row">' + w.forecast.slice(0, 3).map((f, i) =>
+      '<div class="fc-chip' + (i === off ? ' on' : '') + '">' +
+      '<div class="fc-day">' + ['今天', '明天', '后天'][i] + '</div>' +
+      '<div class="fc-t">' + f.min + '~' + f.max + '°</div>' +
+      '<div class="fc-d">' + esc(f.desc || '') + '</div></div>').join('') + '</div>';
+  }
+
+  html += '<div class="ctx-row">' +
+    '<span class="muted">场合：</span>' +
+    OCCASIONS.map((o) => '<button class="occ-chip' + (o === occ ? ' on' : '') + '" data-action="set-occ" data-v="' + o + '">' + o + '</button>').join('') +
+    '<button class="link-btn" data-action="open-schedule">📅 日程</button>' +
+    '</div>';
+  if (s.occMap && s.occMap[dateStr] && off !== 0) {
+    html += '<div class="banner">📅 这天有日程安排：' + esc(s.occMap[dateStr]) + '</div>';
+  }
+
   if (state.items.length === 0) {
-    el.innerHTML = html + '<div class="empty"><div class="big">👔</div>衣橱还是空的<br>先去「衣橱」拍几件衣服进来</div>';
+    el.innerHTML = html + '<div class="empty"><div class="big">👔</div>衣橱还是空的<br>去「衣橱」拍几件衣服进来（支持连拍）</div>';
     return;
   }
 
-  if (!ui.sets.length) ui.sets = generateSets(3);
+  /* 昨晚挑好的明早方案 */
+  if (off === 1 && s.plan && s.plan.date === dateStr) {
+    html += '<div class="manual-record"><div class="kv"><span class="k">已定方案</span><span>' +
+      s.plan.ids.map((id) => { const it = findItem(id); return it ? esc(it.name) : '?'; }).join(' + ') +
+      '</span></div><button class="link-btn" data-action="clear-plan">取消方案</button></div>';
+  }
+
+  /* 候选 */
+  const genKey = dateStr + '|' + occ + '|' + temp;
+  if (ui.setsFor !== genKey) {
+    ui.sets = generateSets(3, new Set(), temp, occ);
+    ui.setsFor = genKey;
+    ui.reviews = {};
+  }
   if (!ui.sets.length) {
     html += '<div class="empty"><div class="big">🌡️</div>当前 ' + (temp == null ? '' : temp + '° ') +
-      '没有满足适穿温度的三件套<br><button class="link-btn" data-action="edit-temp">改一下今天的温度</button></div>';
+      '没有满足适穿温度的组合<br><button class="link-btn" data-action="edit-temp">改一下温度</button></div>';
   } else {
-    html += '<div class="section-title">今日候选 <button class="link-btn" data-action="regen">换一批 ⟳</button></div>';
+    html += '<div class="section-title">' + (off === 1 ? '明早候选' : '今日候选') +
+      ' <button class="link-btn" data-action="regen">换一批 ⟳</button></div>';
     html += ui.sets.map((set, idx) => {
-      const rows = set.ids.map((id) => {
-        const it = findItem(id);
-        if (!it) return '';
-        const url = imgCache.get(it.id);
-        return '<div class="outfit-row">' +
-          (url ? '<img src="' + url + '" alt="">' : '<div class="noimg">无图</div>') +
-          '<div><div class="item-name">' + esc(it.name) + '</div>' +
-          '<div class="item-sub"><span class="swatch" style="background:' + (HEX_OF[it.color] || it.colorHex || '#ccc') + '"></span>' +
-          esc(it.color) + ' · ' + esc(it.subtype) + ' · 正式度 ' + it.formality + '</div></div></div>';
-      }).join('');
+      const rows = set.ids.map(itemRow).join('');
+      const rv = ui.reviews[set.key];
       return '<div class="outfit-card">' +
         '<div class="outfit-rows">' + rows + '</div>' +
         '<div class="reason">' + set.reasons.slice(0, 3).map(esc).join('；') + '</div>' +
+        (rv ? '<div class="ai-review">' + esc(rv) + '</div>' : '') +
         '<div class="card-actions">' +
-        '<button class="btn primary" data-action="wear-set" data-i="' + idx + '">就穿这套</button>' +
+        (off === 1
+          ? '<button class="btn primary" data-action="plan-set" data-i="' + idx + '">定为明早方案</button>'
+          : '<button class="btn primary" data-action="wear-set" data-i="' + idx + '">就穿这套</button>') +
         '<button class="icon-btn" data-action="fb" data-i="' + idx + '" data-k="like">👍</button>' +
         '<button class="icon-btn" data-action="fb" data-i="' + idx + '" data-k="dislike">👎</button>' +
+        '<button class="icon-btn" data-action="ai-review" data-i="' + idx + '" title="AI 点评">💬</button>' +
         '</div></div>';
     }).join('');
   }
 
-  const rec = state.wearlog.find((w2) => w2.date === today());
-  if (rec) {
-    const names = rec.ids.map((id) => { const it = findItem(id); return it ? it.name : '?'; }).join(' + ');
-    html += '<div class="section-title">今日记录</div><div class="manual-record">' +
-      '<div class="kv"><span class="k">已记录</span><span>' + esc(names) + '</span></div>' +
-      '<button class="link-btn" data-action="manual-record">改记别的</button></div>';
-  } else {
-    const opts = (cat) => state.items.filter((i) => i.category === cat && i.status === 'active')
-      .map((i) => '<option value="' + i.id + '">' + esc(i.name) + '</option>').join('');
-    html += '<div class="section-title">没穿推荐的？手动记录今天</div>' +
-      '<div class="manual-record">' +
-      '<div class="mr-row">' +
-      '<select id="mr-top"><option value="">上衣</option>' + opts('top') + '</select>' +
-      '<select id="mr-pants"><option value="">裤子</option>' + opts('pants') + '</select>' +
-      '<select id="mr-shoes"><option value="">鞋子</option>' + opts('shoes') + '</select>' +
-      '</div>' +
-      '<button class="btn primary" data-action="save-manual-record">记录今天穿了啥</button></div>';
+  /* 今天穿了啥 */
+  if (off === 0) {
+    const rec = state.wearlog.find((w2) => w2.date === today());
+    if (rec) {
+      const names = rec.ids.map((id) => { const it = findItem(id); return it ? it.name : '?'; }).join(' + ');
+      html += '<div class="section-title">今日记录</div><div class="manual-record">' +
+        '<div class="kv"><span class="k">已记录</span><span>' + esc(names) + '</span></div>' +
+        '<button class="link-btn" data-action="manual-record">改记别的</button></div>';
+    } else {
+      const opts = (cat) => state.items.filter((i) => i.category === cat && i.status === 'active')
+        .map((i) => '<option value="' + i.id + '">' + esc(i.name) + '</option>').join('');
+      html += '<div class="section-title">没穿推荐的？手动记录今天</div>' +
+        '<div class="manual-record">' +
+        '<div class="mr-row"><select id="mr-top"><option value="">上衣*</option>' + opts('top') + '</select>' +
+        '<select id="mr-outer"><option value="">外套(可选)</option>' + opts('outer') + '</select></div>' +
+        '<div class="mr-row"><select id="mr-pants"><option value="">裤子*</option>' + opts('pants') + '</select>' +
+        '<select id="mr-shoes"><option value="">鞋子*</option>' + opts('shoes') + '</select></div>' +
+        '<button class="btn primary" data-action="save-manual-record">记录今天穿了啥</button></div>';
+    }
   }
 
   el.innerHTML = html;
@@ -500,14 +619,14 @@ function renderCloset() {
     '<button class="filter-chip' + (cur === v ? ' on' : '') + '" data-action="' + action + '" data-v="' + v + '">' + label + '</button>';
 
   let html = '<div class="filter-row">' +
-    [['all', '全部'], ['top', '上衣'], ['pants', '裤子'], ['shoes', '鞋子']].map(([v, l]) => chip(v, l, f.cat, 'filter-cat')).join('') +
+    [['all', '全部'], ['top', '上衣'], ['outer', '外套'], ['pants', '裤子'], ['shoes', '鞋子']].map(([v, l]) => chip(v, l, f.cat, 'filter-cat')).join('') +
     '</div><div class="filter-row">' +
     chip('active', '只看可穿', f.status, 'filter-status') +
     chip('all', '含在洗/收纳/退役', f.status, 'filter-status') +
     '</div>';
 
   if (!items.length) {
-    html += '<div class="empty"><div class="big">📷</div>这里还没有衣物<br>点右下角「+ 添加衣物」</div>';
+    html += '<div class="empty"><div class="big">📷</div>这里还没有衣物<br>点右下角「＋ 添加」或「📷 连拍」</div>';
   } else {
     html += '<div class="grid">' + items.map((it) => {
       const url = imgCache.get(it.id);
@@ -519,7 +638,8 @@ function renderCloset() {
         esc(it.color) + ' · ' + esc(it.subtype) + '</div></div></div>';
     }).join('') + '</div>';
   }
-  html += '<button class="fab" data-action="add-item">＋ 添加衣物</button>';
+  html += '<button class="fab" data-action="add-item">＋ 添加</button>' +
+    '<button class="fab fab2" data-action="batch-add">📷 连拍</button>';
   el.innerHTML = html;
 }
 
@@ -534,8 +654,8 @@ function renderSettings() {
     '<div class="section-title">备份</div>' +
     '<div class="manual-record">' +
     '<div class="kv"><span class="k">上次备份</span><span>' + (lb ? esc(lb) + '（' + days + ' 天前）' : '从未备份') + '</span></div>' +
-    '<div class="kv"><span class="k">库内</span><span>' + state.items.length + ' 件衣物 · ' + imgCache.size + ' 张照片 · ' + state.wearlog.length + ' 条穿着记录</span></div>' +
-    '<div class="muted" style="margin:8px 0">导出的 zip 包含全部照片和记录。iPhone 点导出后在分享面板里可直接发到微信「文件传输助手」，也可存到「文件」App。清了浏览器数据就靠它恢复。</div>' +
+    '<div class="kv"><span class="k">库内</span><span>' + state.items.length + ' 件 · ' + imgCache.size + ' 张照片 · ' + state.wearlog.length + ' 条穿着记录</span></div>' +
+    '<div class="muted" style="margin:8px 0">导出的 zip 包含全部照片和记录。iPhone 点导出后在分享面板里可直接发到微信「文件传输助手」。清了浏览器数据就靠它恢复。</div>' +
     '<div class="sheet-actions">' +
     '<button class="btn primary" data-action="export">导出备份</button>' +
     '<button class="btn ghost" data-action="import">导入恢复</button>' +
@@ -551,6 +671,18 @@ function renderSettings() {
     '<button class="btn ghost" data-action="refresh-weather">重新取天气</button>' +
     '</div></div>' +
 
+    '<div class="section-title">AI 点评 / 识别（可选）</div>' +
+    '<div class="manual-record">' +
+    '<div class="muted" style="margin-bottom:6px">接任意 OpenAI 兼容接口。密钥只存在本机浏览器，照片只发给你配置的接口。接口需支持 https（浏览器限制）。不配置也能正常使用其他功能。</div>' +
+    '<label class="fld">接口地址（到 /v1 结尾）</label>' +
+    '<input type="text" id="set-ai-url" value="' + esc(s.ai.url) + '" placeholder="https://api.xxx.com/v1">' +
+    '<label class="fld">模型名</label>' +
+    '<input type="text" id="set-ai-model" value="' + esc(s.ai.model) + '" placeholder="如 gpt-4o-mini / qwen-vl-plus">' +
+    '<label class="fld">API Key</label>' +
+    '<input type="password" id="set-ai-key" value="' + esc(s.ai.key) + '" placeholder="sk-...">' +
+    '<div class="sheet-actions"><button class="btn ghost" data-action="save-ai">保存 AI 配置</button>' +
+    '<button class="btn ghost" data-action="test-ai">测试连通</button></div></div>' +
+
     '<div class="section-title">数据</div>' +
     '<div class="manual-record">' +
     '<div class="kv"><span class="k">手动温度</span><span>' + (s.manualTemp == null ? '未设置（自动）' : s.manualTemp + '°') + '</span></div>' +
@@ -560,7 +692,7 @@ function renderSettings() {
     '</div>' +
 
     '<div class="section-title">关于</div>' +
-    '<div class="manual-record"><div class="muted">穿搭助手 v1.0 —— 数据全部存在本机浏览器（照片 IndexedDB，记录 localStorage），不上传任何服务器。建议加到主屏幕使用（iPhone 可避开 Safari 的 7 天自动清理），并养成定期导出备份的习惯。</div></div>';
+    '<div class="manual-record"><div class="muted">穿搭助手 v2.0 —— 数据全部存在本机浏览器（照片 IndexedDB，记录 localStorage），不上传任何服务器。建议加到主屏幕使用，并养成定期导出备份的习惯。</div></div>';
 }
 
 function renderBackupChip() {
@@ -577,10 +709,11 @@ function renderAll() {
   renderBackupChip();
   if (ui.tab === 'today') renderToday();
   if (ui.tab === 'closet') renderCloset();
+  if (ui.tab === 'stats' && typeof renderStats === 'function') renderStats();
   if (ui.tab === 'settings') renderSettings();
 }
 
-/* ================= 衣物表单（添加 / 编辑） ================= */
+/* ================= 衣物表单（添加 / 编辑 / 批量） ================= */
 function openItemSheet(id) {
   const it = id ? findItem(id) : null;
   ui.draft = it ? Object.assign({}, it, { tags: (it.tags || []).slice(), _newPhoto: null, _suggestions: [] }) : {
@@ -595,6 +728,7 @@ function renderItemSheet() {
   const root = document.getElementById('sheet-root');
   const url = d._newPhoto ? URL.createObjectURL(d._newPhoto) : (d.id ? imgCache.get(d.id) : null);
   const subList = SUBTYPES[d.category] || [];
+  const qLeft = ui.batchQueue.length;
 
   const suggestions = d._suggestions || [];
   const sugRow = suggestions.map((sg, i) =>
@@ -607,7 +741,7 @@ function renderItemSheet() {
 
   root.innerHTML =
     '<div class="sheet-mask" data-action="close-sheet"><div class="sheet" data-stop="1">' +
-    '<h3>' + (d.id ? '编辑衣物' : '添加衣物') + '</h3>' +
+    '<h3>' + (d.id ? '编辑衣物' : (qLeft ? '批量录入（还剩 ' + (qLeft + 1) + ' 张）' : '添加衣物')) + '</h3>' +
 
     '<div class="photo-drop" data-action="pick-photo">' +
     (url ? '<img src="' + url + '" alt="">' : '<div class="hint">📷 点击拍照或选照片<br><span style="font-size:11px">拍平整、光线均匀，取色更准</span></div>') +
@@ -615,6 +749,7 @@ function renderItemSheet() {
     '<div class="photo-btns">' +
     '<button class="btn ghost" data-action="pick-photo" data-capture="1">拍照</button>' +
     '<button class="btn ghost" data-action="pick-photo">从相册选</button>' +
+    (state.settings.ai.url && state.settings.ai.key ? '<button class="btn ghost" data-action="ai-identify">🤖 AI 识别</button>' : '') +
     (d.id || d._newPhoto ? '<button class="btn danger" data-action="remove-photo">删照片</button>' : '') +
     '</div>' +
 
@@ -623,11 +758,11 @@ function renderItemSheet() {
       '<button class="tag-btn' + (d.category === c ? ' on' : '') + '" data-action="set-cat" data-v="' + c + '">' + CAT[c] + '</button>').join('') +
     '</div>' +
 
-    '<label class="fld">子类型（决定温度和正式度默认值，也参与裤鞋搭配打分）</label>' +
+    '<label class="fld">子类型（决定温度和正式度默认值，也参与搭配打分）</label>' +
     '<select id="f-subtype">' + subList.map((st) =>
       '<option value="' + st.name + '"' + (d.subtype === st.name ? ' selected' : '') + '>' + st.name + '</option>').join('') + '</select>' +
 
-    '<label class="fld">颜色（先自动识别，不对就点色卡改）</label>' +
+    '<label class="fld">颜色（自动识别，不对就点色卡改）</label>' +
     (sugRow ? '<div class="swatch-row">' + sugRow + '</div>' : '') +
     '<div class="swatch-row">' + paletteRow + '</div>' +
 
@@ -652,13 +787,14 @@ function renderItemSheet() {
       '<option value="' + k + '"' + (d.status === k ? ' selected' : '') + '>' + v + '</option>').join('') + '</select>' : '') +
 
     '<div class="sheet-actions">' +
-    '<button class="btn primary" data-action="save-item">' + (d.id ? '保存修改' : '加入衣橱') + '</button>' +
-    '<button class="btn ghost" data-action="close-sheet">取消</button>' +
+    '<button class="btn primary" data-action="save-item">' + (d.id ? '保存修改' : (qLeft ? '保存，拍下一件' : '加入衣橱')) + '</button>' +
+    (qLeft ? '<button class="btn ghost" data-action="skip-batch">跳过这张</button>' : '') +
+    '<button class="btn ghost" data-action="close-sheet">' + (qLeft ? '结束批量' : '取消') + '</button>' +
     (d.id ? '<button class="btn danger" data-action="delete-item">删除</button>' : '') +
     '</div></div></div>';
 }
 
-async function saveDraft() {
+async function saveDraft(andNext) {
   const d = ui.draft;
   const nameEl = document.getElementById('f-name');
   const name = (nameEl && nameEl.value.trim()) || '';
@@ -699,10 +835,38 @@ async function saveDraft() {
     }
   }
   saveAll();
-  closeSheet();
-  ui.sets = [];
-  renderAll();
+  ui.setsFor = null;
   toast('已保存 ✓');
+
+  /* 批量模式：接着处理队列里的下一张 */
+  if (andNext && ui.batchQueue.length) {
+    const next = ui.batchQueue.shift();
+    ui.draft = null;
+    openItemSheet(null);
+    await applyPhotoToDraft(next);
+    renderItemSheet();
+    return;
+  }
+  if (andNext && !ui.batchQueue.length) {
+    closeSheet(); renderAll();
+    toast('批量录入完成 ✓');
+    return;
+  }
+  closeSheet();
+  renderAll();
+}
+
+async function applyPhotoToDraft(file) {
+  const blob = await compressImage(file);
+  const sugg = await extractColors(blob);
+  if (!ui.draft) return;
+  ui.draft._newPhoto = blob;
+  ui.draft._photoRemoved = false;
+  if (sugg.length) {
+    ui.draft._suggestions = sugg;
+    ui.draft.color = sugg[0].family;
+    ui.draft.colorHex = sugg[0].hex;
+  }
 }
 
 async function deleteDraftItem() {
@@ -714,16 +878,17 @@ async function deleteDraftItem() {
   state.items = state.items.filter((i) => i.id !== d.id);
   state.wearlog.forEach((w) => { w.ids = w.ids.filter((x) => x !== d.id); w.key = w.ids.slice().sort().join('|'); });
   state.wearlog = state.wearlog.filter((w) => w.ids.length > 0);
-  saveAll(); closeSheet(); ui.sets = []; renderAll();
+  saveAll(); closeSheet(); ui.setsFor = null; renderAll();
   toast('已删除');
 }
 
 function closeSheet() {
   document.getElementById('sheet-root').innerHTML = '';
   ui.draft = null;
+  ui.batchQueue = [];
 }
 
-/* ================= 导出 / 导入（zip，纯 JS，无依赖） ================= */
+/* ================= 导出 / 导入（zip，纯 JS） ================= */
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -806,18 +971,24 @@ function parseZip(arrayBuffer) {
   return out;
 }
 
+async function buildZipBlob() {
+  const meta = {
+    app: 'outfit', version: 2, exportedAt: new Date().toISOString(),
+    items: state.items, wearlog: state.wearlog, feedback: state.feedback,
+    settings: Object.assign({}, state.settings)
+  };
+  delete meta.settings.ai; // 备份不含 API 密钥
+  const files = [{ name: 'library.json', data: new TextEncoder().encode(JSON.stringify(meta)) }];
+  for (const it of state.items) {
+    const b = await photoGet(it.id);
+    if (b) files.push({ name: 'photos/' + it.id + '.jpg', data: new Uint8Array(await b.arrayBuffer()) });
+  }
+  return makeZip(files);
+}
+
 async function doExport() {
   try {
-    const meta = {
-      app: 'outfit', version: 1, exportedAt: new Date().toISOString(),
-      items: state.items, wearlog: state.wearlog, feedback: state.feedback, settings: state.settings
-    };
-    const files = [{ name: 'library.json', data: new TextEncoder().encode(JSON.stringify(meta)) }];
-    for (const it of state.items) {
-      const b = await photoGet(it.id);
-      if (b) files.push({ name: 'photos/' + it.id + '.jpg', data: new Uint8Array(await b.arrayBuffer()) });
-    }
-    const blob = makeZip(files);
+    const blob = await buildZipBlob();
     const fname = '衣橱备份-' + today() + '.zip';
     const file = new File([blob], fname, { type: 'application/zip' });
 
@@ -867,11 +1038,13 @@ async function doImport(file) {
     state.items = meta.items || [];
     state.wearlog = meta.wearlog || [];
     state.feedback = meta.feedback || {};
+    const keepAi = state.settings.ai;
     state.settings = Object.assign(state.settings, meta.settings || {});
+    state.settings.ai = keepAi;
     saveAll();
     imgCache.clear();
     await preloadPhotos();
-    ui.sets = [];
+    ui.setsFor = null;
     renderAll();
     toast('导入成功 ✓');
   } catch (e) {
@@ -888,28 +1061,38 @@ function bindEvents() {
     const act = el.dataset.action;
     const d = ui.draft;
 
-    /* sheet 内部点击不应触发遮罩关闭 */
     if (act === 'close-sheet' && el.classList.contains('sheet-mask') && ev.target !== el) return;
 
     switch (act) {
       case 'close-sheet': closeSheet(); renderAll(); break;
 
+      case 'set-viewday':
+        ui.viewDay = parseInt(el.dataset.v, 10);
+        ui.setsFor = null;
+        renderToday();
+        break;
+
       case 'set-occ':
-        state.settings.occasion = el.dataset.v; saveAll(); ui.sets = []; renderAll(); break;
+        state.settings.occasion = el.dataset.v; saveAll(); ui.setsFor = null; renderAll(); break;
+
+      case 'open-schedule':
+        if (typeof openScheduleSheet === 'function') openScheduleSheet();
+        break;
 
       case 'edit-temp': {
-        const v = prompt('今天的温度（°C）？留空恢复自动', currentTemp() == null ? '' : String(currentTemp()));
+        const v = prompt('今天温度（°C）？留空恢复自动', tempForDay(0) == null ? '' : String(tempForDay(0)));
         if (v === null) break;
         const n = parseInt(v, 10);
         state.settings.manualTemp = isNaN(n) ? null : n;
-        saveAll(); ui.sets = []; renderAll();
+        saveAll(); ui.setsFor = null; renderAll();
         break;
       }
       case 'clear-temp':
         state.settings.manualTemp = null; saveAll(); renderAll(); toast('已恢复自动温度'); break;
 
       case 'regen':
-        ui.sets = generateSets(3, new Set(ui.sets.map((s) => s.key)));
+        ui.sets = generateSets(3, new Set(ui.sets.map((s) => s.key)), tempForDay(ui.viewDay), null);
+        ui.reviews = {};
         renderToday();
         break;
 
@@ -917,12 +1100,25 @@ function bindEvents() {
         const set = ui.sets[parseInt(el.dataset.i, 10)];
         if (set) {
           recordWear(set.ids);
-          ui.sets = [];
+          state.settings.plan = null;
+          ui.setsFor = null;
           renderAll();
           toast('已记录今天穿了这套 ✓');
         }
         break;
       }
+      case 'plan-set': {
+        const set = ui.sets[parseInt(el.dataset.i, 10)];
+        if (set) {
+          state.settings.plan = { date: dayOffset(1), ids: set.ids };
+          saveAll(); renderToday();
+          toast('已定为明早方案 ✓');
+        }
+        break;
+      }
+      case 'clear-plan':
+        state.settings.plan = null; saveAll(); renderToday(); break;
+
       case 'fb': {
         const set = ui.sets[parseInt(el.dataset.i, 10)];
         if (set) {
@@ -932,14 +1128,25 @@ function bindEvents() {
         }
         break;
       }
+      case 'ai-review': {
+        const set = ui.sets[parseInt(el.dataset.i, 10)];
+        if (set && typeof aiReviewSet === 'function') aiReviewSet(set, el);
+        break;
+      }
+      case 'ai-identify':
+        if (typeof aiIdentifyDraft === 'function') aiIdentifyDraft();
+        break;
+
       case 'manual-record': {
         state.wearlog = state.wearlog.filter((w) => w.date !== today());
         saveAll(); renderToday();
         break;
       }
       case 'save-manual-record': {
-        const ids = ['mr-top', 'mr-pants', 'mr-shoes'].map((x) => document.getElementById(x).value);
-        if (ids.some((x) => !x)) { toast('三件都要选哦'); break; }
+        const ids = ['mr-top', 'mr-pants', 'mr-shoes', 'mr-outer']
+          .map((x) => document.getElementById(x) ? document.getElementById(x).value : '')
+          .filter(Boolean);
+        if (ids.length < 3) { toast('上衣、裤子、鞋子都要选哦'); break; }
         recordWear(ids);
         renderAll();
         toast('已记录 ✓');
@@ -951,6 +1158,15 @@ function bindEvents() {
       case 'add-item': openItemSheet(null); break;
       case 'open-item': openItemSheet(el.dataset.id); break;
 
+      case 'batch-add': {
+        const inp = document.getElementById('photo-input');
+        inp.setAttribute('capture', 'environment');
+        inp.setAttribute('multiple', 'multiple');
+        inp.value = '';
+        inp.dataset.mode = 'batch';
+        inp.click();
+        break;
+      }
       case 'set-cat': {
         if (!d) break;
         d.category = el.dataset.v;
@@ -973,10 +1189,11 @@ function bindEvents() {
         break;
       }
       case 'pick-photo': {
-        ui.photoTarget = 'draft';
         const inp = document.getElementById('photo-input');
         if (el.dataset.capture) inp.setAttribute('capture', 'environment');
         else inp.removeAttribute('capture');
+        inp.removeAttribute('multiple');
+        inp.dataset.mode = 'single';
         inp.value = '';
         inp.click();
         break;
@@ -985,7 +1202,17 @@ function bindEvents() {
         if (d) { d._newPhoto = null; if (d.id) d._photoRemoved = true; }
         renderItemSheet();
         break;
-      case 'save-item': await saveDraft(); break;
+      case 'save-item': await saveDraft(!!ui.batchQueue.length); break;
+      case 'skip-batch': {
+        if (ui.batchQueue.length) {
+          const next = ui.batchQueue.shift();
+          ui.draft = null;
+          openItemSheet(null);
+          await applyPhotoToDraft(next);
+          renderItemSheet();
+        }
+        break;
+      }
       case 'delete-item': await deleteDraftItem(); break;
 
       case 'export': await doExport(); break;
@@ -1002,6 +1229,19 @@ function bindEvents() {
       case 'refresh-weather':
         toast('正在取天气…');
         if (!(await refreshWeather())) toast('取天气失败，可用手动温度');
+        else { ui.setsFor = null; renderAll(); toast('天气已更新'); }
+        break;
+      case 'save-ai': {
+        state.settings.ai = {
+          url: document.getElementById('set-ai-url').value.trim(),
+          model: document.getElementById('set-ai-model').value.trim(),
+          key: document.getElementById('set-ai-key').value.trim()
+        };
+        saveAll(); toast('AI 配置已保存');
+        break;
+      }
+      case 'test-ai':
+        if (typeof testAi === 'function') testAi();
         break;
       case 'clear-all':
         if (confirm('确定清空全部数据？此操作不可恢复（除非有备份）。')) {
@@ -1010,7 +1250,7 @@ function bindEvents() {
             const db = await idb();
             db.transaction('photos', 'readwrite').objectStore('photos').clear();
             state.items = []; state.wearlog = []; state.feedback = {};
-            imgCache.clear(); ui.sets = [];
+            imgCache.clear(); ui.setsFor = null;
             renderAll(); toast('已清空');
           }
         }
@@ -1030,22 +1270,23 @@ function bindEvents() {
       if (def) { d.formality = def.form; d.tmin = def.tmin; d.tmax = def.tmax; }
       renderItemSheet();
     }
-    if (ev.target.id === 'photo-input' && ev.target.files && ev.target.files[0]) {
-      const file = ev.target.files[0];
+    if (ev.target.id === 'photo-input' && ev.target.files && ev.target.files.length) {
+      const files = [...ev.target.files];
       try {
-        toast('处理照片中…');
-        const blob = await compressImage(file);
-        const sugg = await extractColors(blob);
-        if (ui.draft) {
-          ui.draft._newPhoto = blob;
-          ui.draft._photoRemoved = false;
-          if (sugg.length) {
-            ui.draft._suggestions = sugg;
-            ui.draft.color = sugg[0].family;
-            ui.draft.colorHex = sugg[0].hex;
-          }
+        if (ev.target.dataset.mode === 'batch') {
+          ui.batchQueue = files.slice(1);
+          openItemSheet(null);
+          toast('处理照片中…');
+          await applyPhotoToDraft(files[0]);
           renderItemSheet();
-          toast('照片好了，确认一下颜色');
+          toast('确认属性后点「保存，拍下一件」');
+        } else {
+          toast('处理照片中…');
+          await applyPhotoToDraft(files[0]);
+          if (ui.draft) {
+            renderItemSheet();
+            toast('照片好了，确认一下颜色');
+          }
         }
       } catch (e) {
         console.error(e);
@@ -1057,7 +1298,7 @@ function bindEvents() {
     }
   });
 
-  /* 表单输入同步到 draft（重绘时不丢） */
+  /* 表单输入同步到 draft */
   document.addEventListener('input', (ev) => {
     const d = ui.draft;
     if (!d) return;
@@ -1071,9 +1312,9 @@ function bindEvents() {
 function switchTab(tab) {
   ui.tab = tab;
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-  document.getElementById('page-today').classList.toggle('hidden', tab !== 'today');
-  document.getElementById('page-closet').classList.toggle('hidden', tab !== 'closet');
-  document.getElementById('page-settings').classList.toggle('hidden', tab !== 'settings');
+  ['today', 'closet', 'stats', 'settings'].forEach((t) => {
+    document.getElementById('page-' + t).classList.toggle('hidden', tab !== t);
+  });
   renderAll();
   window.scrollTo(0, 0);
 }
@@ -1094,7 +1335,6 @@ async function init() {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
-  /* 自动取天气（失败就用缓存/手动） */
   refreshWeather();
 }
 init();
