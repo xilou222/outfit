@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>穿搭助手</title>
+<meta name="theme-color" content="#1f6f5c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="穿搭">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">穿搭助手</div>
+    <div id="backup-chip" class="chip hidden" data-action="goto-settings"></div>
+  </header>
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section id="page-today" class="page"></section>
+    <section id="page-closet" class="page hidden"></section>
+    <section id="page-settings" class="page hidden"></section>
+  </main>
+
+  <nav id="tabbar">
+    <button data-tab="today" class="tab active">今天</button>
+    <button data-tab="closet" class="tab">衣橱</button>
+    <button data-tab="settings" class="tab">设置</button>
+  </nav>
+</div>
+
+<div id="sheet-root"></div>
+<div id="toast"></div>
+
+<input type="file" id="photo-input" accept="image/*" style="display:none">
+<input type="file" id="import-input" accept=".zip,.json" style="display:none">
+
+<script src="app.js"></script>
+</body>
+</html>
