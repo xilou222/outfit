@@ -395,5 +395,145 @@ document.addEventListener('click', async (ev) => {
         toast('复制失败，请手动选择文字');
       }
       break;
+
+    case 'sync-setup': await syncSetup(); break;
+    case 'sync-push': await syncPush(); break;
+    case 'sync-pull':
+    case 'sync-pull-now': await syncPull(); break;
   }
 });
+
+/* ================= GitHub 同步（私有仓库） ================= */
+function syncConfigured() {
+  const s = state.settings.sync;
+  return !!(s && s.token && s.repo);
+}
+function syncRepoPath() {
+  const s = state.settings.sync;
+  return '/repos/' + (s.owner || '') + '/' + s.repo;
+}
+function u8ToB64(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+  return btoa(s);
+}
+function b64ToU8(b64) {
+  const bin = atob(String(b64).replace(/\s/g, ''));
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+async function ghApi(path, opts) {
+  const s = state.settings.sync;
+  const base = s.apiBase || 'https://api.github.com';
+  const r = await aiFetch(base + path, Object.assign({
+    headers: {
+      'Authorization': 'Bearer ' + s.token,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  }, opts || {}), 30000);
+  if (r.status === 404) return null;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error('同步口令无效或已过期');
+    if (r.status === 409) throw new Error('云端已被更新，先「从云端恢复」再上传');
+    throw new Error('GitHub ' + r.status + '：' + (j.message || ''));
+  }
+  return j;
+}
+
+async function syncSetup() {
+  const token = document.getElementById('set-sync-token').value.trim();
+  const repo = document.getElementById('set-sync-repo').value.trim() || 'outfit-data';
+  if (!token) { toast('先填同步口令'); return; }
+  state.settings.sync = Object.assign({}, state.settings.sync, { token, repo });
+  toast('连接中…');
+  try {
+    const me = await ghApi('/user');
+    if (!me) throw new Error('口令无效');
+    state.settings.sync.owner = me.login;
+    let repoInfo = await ghApi(syncRepoPath());
+    if (!repoInfo) {
+      repoInfo = await ghApi('/user/repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: repo, private: true, auto_init: true, description: '穿搭助手数据（私有）' })
+      });
+      toast('已创建私有仓库 ' + me.login + '/' + repo);
+    }
+    saveAll(); renderSettings();
+    toast('同步已就绪 ✓');
+  } catch (e) {
+    console.error(e);
+    toast('连接失败：' + e.message);
+  }
+}
+
+async function syncPush(silent) {
+  if (!syncConfigured()) { toast('先在设置里配置同步'); return false; }
+  try {
+    const blob = await buildZipBlob(true); // 云端同步含 AI 配置（配置随数据走）
+    const b64 = u8ToB64(new Uint8Array(await blob.arrayBuffer()));
+    const path = syncRepoPath() + '/contents/backup.zip';
+    const existing = await ghApi(path);
+    const body = {
+      message: 'sync ' + new Date().toISOString().slice(0, 16).replace('T', ' '),
+      content: b64
+    };
+    if (existing) body.sha = existing.sha;
+    const resp = await ghApi(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const s = state.settings.sync;
+    s.lastSyncAt = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    s.lastRemoteSha = resp && resp.content ? resp.content.sha : null;
+    ui.syncNotice = null;
+    saveAll();
+    if (!silent) { renderSettings(); toast('已上传到云端 ✓'); }
+    return true;
+  } catch (e) {
+    console.error(e);
+    if (!silent) toast('上传失败：' + e.message);
+    return false;
+  }
+}
+
+async function syncPull() {
+  if (!syncConfigured()) { toast('先在设置里配置同步'); return; }
+  try {
+    toast('从云端拉取…');
+    const f = await ghApi(syncRepoPath() + '/contents/backup.zip');
+    if (!f) { toast('云端还没有备份，先点「上传到云端」'); return; }
+    const u8 = b64ToU8(f.content);
+    const entries = parseZip(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
+    const raw = entries['library.json'];
+    if (!raw) throw new Error('云端文件格式不对');
+    const meta = JSON.parse(new TextDecoder().decode(raw));
+    if (!confirm('用云端数据替换本机（' + (meta.items || []).length + ' 件衣物）？')) return;
+    await applyLibrary(meta, entries);
+    const s = state.settings.sync;
+    s.lastSyncAt = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    s.lastRemoteSha = f.sha;
+    ui.syncNotice = null;
+    saveAll();
+    renderAll();
+    toast('已同步到本机 ✓');
+  } catch (e) {
+    console.error(e);
+    toast('同步失败：' + e.message);
+  }
+}
+
+async function syncCheck() {
+  if (!syncConfigured()) return;
+  try {
+    const f = await ghApi(syncRepoPath() + '/contents/backup.zip');
+    if (f && f.sha !== state.settings.sync.lastRemoteSha) {
+      ui.syncNotice = '云端有新版本，和本机不是同一份';
+      renderAll();
+    }
+  } catch (e) { /* 静默：离线或口令失效不打扰 */ }
+}

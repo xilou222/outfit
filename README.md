@@ -53,6 +53,24 @@ python3 -m http.server 8077 --bind 0.0.0.0
 3. **新购**：随手拍一张加进库。
 4. **换季/穿坏**：编辑衣物改状态（在洗/收纳/退役），推荐自动跳过。
 
+## 同步（跨设备，可选）
+
+把数据和 AI 配置同步到你自己的 **GitHub 私有仓库**，电脑、手机就是同一份。首次配置一分钟：
+
+1. **生成同步口令**：打开 github.com → 右上头像 → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token：
+   - Expiration 选长一点（如 1 年）；
+   - Repository access 选 **All repositories**（或者先建好仓库再选 Only select）；
+   - Permissions → Repository permissions → **Contents: Read and write**（只这一个）；
+   - 生成后复制（只显示一次）。
+2. 应用里「设置」→「同步（跨设备）」→ 粘贴口令 → 点**「保存并连接」**——仓库不存在会自动建一个私有仓库（默认名 `outfit-data`）。
+3. 之后：改完数据点**「上传到云端」**；换设备装好后点**「从云端恢复」**。打开应用时如果发现云端和本机不是同一份，会在「今天」页顶上出横幅提醒。
+
+说明：
+
+- 云端是你名下的私有仓库，备份 zip 里**含 AI 配置**（所以配置随设备走）；**同步口令本身永不上传**，每台设备粘贴一次。
+- Git 本身就是版本历史：每次同步是一个提交，误操作可以到仓库里回退。
+- 发微信的手动备份仍然**不含密钥**，两个通道策略不同是刻意的。
+
 ## 备份（重要）
 
 数据在浏览器里，**清浏览器数据 = 全没**（iPhone 加主屏幕后 Safari 的清除按钮碰不到它，但删图标、换手机会没）。所以：

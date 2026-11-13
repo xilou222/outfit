@@ -515,6 +515,10 @@ function renderToday() {
   const w = s.weather;
 
   let html = '';
+  if (ui.syncNotice) {
+    html += '<div class="banner">☁️ ' + esc(ui.syncNotice) +
+      ' <button class="link-btn" data-action="sync-pull-now">立即同步到本机</button></div>';
+  }
   /* 今明切换 + 天气 + 场合 */
   html += '<div class="ctx-row">' +
     '<button class="ctx-pill' + (off === 0 ? ' on' : '') + '" data-action="set-viewday" data-v="0">今天</button>' +
@@ -682,6 +686,23 @@ function renderSettings() {
     '<input type="password" id="set-ai-key" value="' + esc(s.ai.key) + '" placeholder="sk-...">' +
     '<div class="sheet-actions"><button class="btn ghost" data-action="save-ai">保存 AI 配置</button>' +
     '<button class="btn ghost" data-action="test-ai">测试连通</button></div></div>' +
+
+    '<div class="section-title">同步（跨设备）</div>' +
+    '<div class="manual-record">' +
+    '<div class="muted" style="margin-bottom:6px">把数据和 AI 配置同步到你自己的 GitHub 私有仓库，电脑、手机就是同一份。同步口令只存本机、不进云端。</div>' +
+    '<label class="fld">同步口令（GitHub Personal Access Token，权限勾选 repo）</label>' +
+    '<input type="password" id="set-sync-token" value="' + esc((s.sync || {}).token || '') + '" placeholder="ghp_... 或 github_pat_...">' +
+    '<label class="fld">仓库名（不存在会自动创建为私有仓库）</label>' +
+    '<input type="text" id="set-sync-repo" value="' + esc((s.sync || {}).repo || 'outfit-data') + '">' +
+    '<div class="kv"><span class="k">状态</span><span>' +
+      (s.sync && s.sync.token
+        ? (esc(s.sync.owner || '') + '/' + esc(s.sync.repo || '') + (s.sync.lastSyncAt ? ' · 上次同步 ' + esc(s.sync.lastSyncAt) : ' · 未同步过'))
+        : '未配置') + '</span></div>' +
+    '<div class="sheet-actions">' +
+    '<button class="btn ghost" data-action="sync-setup">保存并连接</button>' +
+    '<button class="btn primary" data-action="sync-push">上传到云端</button>' +
+    '<button class="btn ghost" data-action="sync-pull">从云端恢复</button>' +
+    '</div></div>' +
 
     '<div class="section-title">数据</div>' +
     '<div class="manual-record">' +
@@ -971,13 +992,14 @@ function parseZip(arrayBuffer) {
   return out;
 }
 
-async function buildZipBlob() {
+async function buildZipBlob(includeSecrets) {
   const meta = {
     app: 'outfit', version: 2, exportedAt: new Date().toISOString(),
     items: state.items, wearlog: state.wearlog, feedback: state.feedback,
     settings: Object.assign({}, state.settings)
   };
-  delete meta.settings.ai; // 备份不含 API 密钥
+  delete meta.settings.sync;                       // 同步令牌永不出本机
+  if (!includeSecrets) delete meta.settings.ai;    // 发微信的备份不含 AI 密钥；云端同步含（配置随数据走）
   const files = [{ name: 'library.json', data: new TextEncoder().encode(JSON.stringify(meta)) }];
   for (const it of state.items) {
     const b = await photoGet(it.id);
@@ -1016,36 +1038,42 @@ async function doExport() {
   }
 }
 
+/* 把一份库数据应用到本机（导入/云端恢复共用） */
+async function applyLibrary(meta, photoEntries) {
+  if (photoEntries) {
+    for (const it of (meta.items || [])) {
+      const pb = photoEntries['photos/' + it.id + '.jpg'];
+      if (pb) await photoPut(it.id, new Blob([pb], { type: 'image/jpeg' }));
+    }
+  }
+  state.items = meta.items || [];
+  state.wearlog = meta.wearlog || [];
+  state.feedback = meta.feedback || {};
+  /* meta.settings 里没有的键保持本机现状（比如同步令牌）；有的键随数据走（含 AI 配置） */
+  state.settings = Object.assign(state.settings, meta.settings || {});
+  saveAll();
+  imgCache.clear();
+  await preloadPhotos();
+  ui.setsFor = null;
+  renderAll();
+}
+
 async function doImport(file) {
   try {
     let meta = null;
+    let photoEntries = null;
     const buf = await file.arrayBuffer();
     if (file.name.toLowerCase().endsWith('.zip')) {
-      const entries = parseZip(buf);
-      const raw = entries['library.json'];
+      photoEntries = parseZip(buf);
+      const raw = photoEntries['library.json'];
       if (!raw) throw new Error('zip 里没有 library.json');
       meta = JSON.parse(new TextDecoder().decode(raw));
-      if (!confirm('导入将替换当前全部数据（' + (meta.items || []).length + ' 件衣物），继续？')) return;
-      for (const it of (meta.items || [])) {
-        const pb = entries['photos/' + it.id + '.jpg'];
-        if (pb) await photoPut(it.id, new Blob([pb], { type: 'image/jpeg' }));
-      }
     } else {
       meta = JSON.parse(new TextDecoder().decode(buf));
       if (!meta || !Array.isArray(meta.items)) throw new Error('文件格式不对');
-      if (!confirm('导入将替换当前全部数据（' + meta.items.length + ' 件衣物），继续？')) return;
     }
-    state.items = meta.items || [];
-    state.wearlog = meta.wearlog || [];
-    state.feedback = meta.feedback || {};
-    const keepAi = state.settings.ai;
-    state.settings = Object.assign(state.settings, meta.settings || {});
-    state.settings.ai = keepAi;
-    saveAll();
-    imgCache.clear();
-    await preloadPhotos();
-    ui.setsFor = null;
-    renderAll();
+    if (!confirm('导入将替换当前全部数据（' + (meta.items || []).length + ' 件衣物），继续？')) return;
+    await applyLibrary(meta, photoEntries);
     toast('导入成功 ✓');
   } catch (e) {
     console.error(e);
@@ -1336,5 +1364,8 @@ async function init() {
   }
 
   refreshWeather();
+
+  /* 云端有新版本时提示 */
+  if (typeof syncCheck === 'function') syncCheck();
 }
 init();
